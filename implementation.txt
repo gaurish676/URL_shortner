@@ -1,0 +1,295 @@
+================================================================================
+IMPLEMENTATION GUIDE: URL SHORTENER WITH ANALYTICS DASHBOARD
+================================================================================
+Target Project: Next.js URL Shortener with Real-Time Analytics
+Workspace: /home/gaurish/Desktop/melsta
+Reference: problemstatement.txt
+Tech Stack: Next.js 14+ (App Router), TypeScript, Tailwind CSS, SQLite (better-sqlite3)
+================================================================================
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+1. Architecture & Technology Decisions
+2. Database Schema & Data Models
+3. Step 0: Base Project Scaffolding & Setup
+4. Step 1: Feature 1 - URL Shortening & Instant Copy
+5. Step 2: Feature 2 - Click Tracking Engine
+6. Step 3: Feature 3 - Analytics Dashboard
+7. Step 4: Verification, Security, & Testing Suite
+8. Step-by-Step Developer Execution Checklist
+
+================================================================================
+1. ARCHITECTURE & TECHNOLOGY DECISIONS
+================================================================================
+- Framework: Next.js 14/15 with App Router and TypeScript.
+  Why: App Router provides native Server Components, Route Handlers (API), and 
+  dynamic server-side redirects with minimal boilerplate.
+- Styling: Tailwind CSS with Lucide React icons.
+  Why: Rapid UI composition, modern responsive dashboard design, and zero runtime CSS overhead.
+- Storage: SQLite via `better-sqlite3`.
+  Why: High-performance synchronous SQLite client, zero cloud credentials/API keys required,
+  persists cleanly across server restarts, and maintains strict ACID guarantees.
+- Routing Strategy:
+  * "/" -> Main Dashboard (Shortener Form + Shortened URLs List + Analytics Viewer)
+  * "/[code]" -> Dynamic Redirect Handler (Records click event and redirects via HTTP 307)
+  * "/api/shorten" -> API endpoint to validate long URLs and generate short codes
+  * "/api/urls" -> API endpoint to fetch all shortened URLs and summary stats
+  * "/api/urls/[code]" -> API endpoint to fetch detailed analytics and timestamped clicks
+
+================================================================================
+2. DATABASE SCHEMA & DATA MODELS
+================================================================================
+Database file location: `/home/gaurish/Desktop/melsta/data/shortener.db`
+
+Table: urls
+--------------------------------------------------------------------------------
+Column        | Type        | Constraints
+--------------------------------------------------------------------------------
+id            | TEXT        | PRIMARY KEY (UUID / nanoid)
+code          | TEXT        | UNIQUE NOT NULL (Indexed for O(1) lookup)
+original_url  | TEXT        | NOT NULL
+created_at    | DATETIME    | NOT NULL DEFAULT CURRENT_TIMESTAMP
+--------------------------------------------------------------------------------
+
+Table: clicks
+--------------------------------------------------------------------------------
+Column        | Type        | Constraints
+--------------------------------------------------------------------------------
+id            | TEXT        | PRIMARY KEY (UUID / nanoid)
+url_id        | TEXT        | NOT NULL REFERENCES urls(id) ON DELETE CASCADE
+timestamp     | DATETIME    | NOT NULL DEFAULT CURRENT_TIMESTAMP (Indexed)
+user_agent    | TEXT        | NULLABLE
+referer       | TEXT        | NULLABLE
+--------------------------------------------------------------------------------
+
+Indices:
+- CREATE UNIQUE INDEX idx_urls_code ON urls(code);
+- CREATE INDEX idx_clicks_url_id ON clicks(url_id);
+- CREATE INDEX idx_clicks_timestamp ON clicks(timestamp DESC);
+
+================================================================================
+3. STEP 0: BASE PROJECT SCAFFOLDING & SETUP
+================================================================================
+Goal: Set up a clean Next.js project with all necessary libraries and SQLite initialization.
+
+Detailed Actions:
+1. Initialize Next.js in the current directory:
+   npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir=false --import-alias="@/*" --use-npm
+2. Install production dependencies:
+   npm install better-sqlite3 nanoid lucide-react
+   npm install --save-dev @types/better-sqlite3
+3. Create database manager module (`lib/db.ts`):
+   - Opens or creates `data/shortener.db`.
+   - Runs database initialization script automatically on startup (creates `urls` and `clicks` tables if not exists).
+   - Exports helper query methods (`db.prepare()`) ensuring connection persistence across hot reloads.
+4. Gate Verification:
+   - Run `npm run build` to verify clean compilation.
+   - Run a short test script `node -e "require('./lib/db')"` to confirm database file creation.
+
+================================================================================
+4. STEP 1: FEATURE 1 - URL SHORTENING & INSTANT COPY
+================================================================================
+Requirements from Spec:
+1. User should be able to paste a long URL and get a short one back
+2. The short URL should work — visiting it should take the user to the original URL
+3. The short URL should be easy to copy
+
+Detailed Implementation Steps:
+1. URL Validation & Code Generation Logic (`lib/shortener.ts`):
+   - Input Normalization: Check if the string begins with `http://` or `https://`. If not, prepend `https://`.
+   - Validation: Validate using `new URL(str)` constructor.
+   - Loopback Prevention: Reject URLs that match the application's own host (e.g., localhost:3000) to prevent infinite redirect loops.
+   - Code Generator: Generate a 6-character collision-resistant alphanumeric string using `nanoid('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ', 6)`.
+   - Duplicate Handling: Check if the long URL already has an existing short code. If so, return existing code; otherwise insert a new record.
+
+2. Shorten API Route (`app/api/shorten/route.ts`):
+   - Method: POST
+   - Request Body: `{ "url": "https://example.com/very/long/path" }`
+   - Response (201 Created):
+     {
+       "success": true,
+       "code": "aB3x9Z",
+       "shortUrl": "http://localhost:3000/aB3x9Z",
+       "originalUrl": "https://example.com/very/long/path",
+       "createdAt": "2026-11-22T10:00:00.000Z"
+     }
+   - Error Response (400 Bad Request):
+     { "success": false, "error": "Invalid URL format" }
+
+3. Redirection Dynamic Route (`app/[code]/route.ts`):
+   - Method: GET
+   - Extracts `code` parameter.
+   - Reserved Routes Check: Ignore requests for system paths (e.g., `favicon.ico`, `api`, `_next`).
+   - Query `urls` table for matching `code`.
+   - If record found: Return `NextResponse.redirect(record.original_url, { status: 307 })`.
+   - If not found: Redirect to `/404` or return custom 404 HTML ("Short link not found").
+
+4. Shortener Form UI (`components/UrlShortenerForm.tsx`):
+   - Text input with placeholder "Paste a long URL here (e.g. https://...)"
+   - "Shorten URL" submit button with loading spinner state.
+   - Output Card:
+     * Shows generated short URL in prominent monospace text.
+     * "Copy" button using `navigator.clipboard.writeText(shortUrl)`.
+     * Visual feedback state: Button changes to green checkmark icon + "Copied!" for 2 seconds.
+     * "Visit" link button that opens the short link in a new tab.
+
+5. Gate Verification for Feature 1:
+   - Call API: `curl -X POST http://localhost:3000/api/shorten -H "Content-Type: application/json" -d '{"url":"https://github.com"}'`
+   - Test Redirect: `curl -I http://localhost:3000/<code_returned>` -> Assert HTTP 307 and `Location: https://github.com`.
+   - Browser Test: Paste URL, click Shorten, click Copy, verify clipboard text matches.
+
+================================================================================
+5. STEP 2: FEATURE 2 - CLICK TRACKING ENGINE
+================================================================================
+Requirements from Spec:
+1. Every time someone visits a short URL, it should be tracked
+2. Tracked data should include when the click happened
+
+Detailed Implementation Steps:
+1. Click Tracker Module (`lib/tracker.ts`):
+   - Function: `recordClick(urlId: string, metadata: { userAgent?: string; referer?: string })`
+   - Generates unique click ID (nanoid).
+   - Generates current ISO UTC timestamp (`new Date().toISOString()`).
+   - Executes parameterized SQLite insert:
+     INSERT INTO clicks (id, url_id, timestamp, user_agent, referer) VALUES (?, ?, ?, ?, ?)
+
+2. Integrate Tracking into Redirect Route (`app/[code]/route.ts`):
+   - When short code matches a valid record in `urls`:
+     * Read `request.headers.get('user-agent')`.
+     * Read `request.headers.get('referer')`.
+     * Call `recordClick(record.id, { userAgent, referer })`.
+     * Return `NextResponse.redirect(record.original_url, 307)`.
+   - Performance Note: SQLite inserts take sub-millisecond time, ensuring zero noticeable latency on the redirect.
+
+3. Bot & Prefetch Filtering (Best Practice):
+   - Check headers for `purpose=prefetch` or `sec-purpose=prefetch` (optional flag to avoid false clicks from browser preloading).
+
+4. Gate Verification for Feature 2:
+   - Perform 3 distinct GET requests using `curl` with custom User-Agent headers:
+     `curl -I http://localhost:3000/<code_returned> -A "TestBrowser1"`
+     `curl -I http://localhost:3000/<code_returned> -A "TestBrowser2"`
+   - Query SQLite directly:
+     `SELECT count(*), timestamp, user_agent FROM clicks WHERE url_id = ?`
+   - Assert: Count equals 3, and each record contains exact timestamp and user agent.
+
+================================================================================
+6. STEP 3: FEATURE 3 - ANALYTICS DASHBOARD
+================================================================================
+Requirements from Spec:
+1. User should be able to see all the URLs they have shortened
+2. Clicking on a URL should show its detailed analytics
+3. Analytics should include total clicks with timestamp of each
+
+Detailed Implementation Steps:
+1. Analytics Query Layer (`lib/analytics.ts`):
+   - `getAllUrlsWithStats()`:
+     SELECT 
+       u.id, 
+       u.code, 
+       u.original_url, 
+       u.created_at, 
+       COUNT(c.id) AS total_clicks,
+       MAX(c.timestamp) AS last_clicked
+     FROM urls u
+     LEFT JOIN clicks c ON u.id = c.url_id
+     GROUP BY u.id
+     ORDER BY u.created_at DESC;
+
+   - `getUrlDetailedAnalytics(code: string)`:
+     Query URL record + query all associated clicks:
+     SELECT id, timestamp, user_agent, referer 
+     FROM clicks 
+     WHERE url_id = ? 
+     ORDER BY timestamp DESC;
+
+2. Analytics API Endpoints:
+   - `GET /api/urls`: Returns JSON list of all shortened URLs with total click counts.
+   - `GET /api/urls/[code]/analytics`: Returns JSON containing:
+     {
+       "code": "aB3x9Z",
+       "originalUrl": "https://example.com",
+       "createdAt": "2026-11-22T10:00:00.000Z",
+       "totalClicks": 12,
+       "clicks": [
+         {
+           "id": "clk_1",
+           "timestamp": "2026-11-22T10:15:30.123Z",
+           "userAgent": "Mozilla/5.0 ...",
+           "referer": "https://google.com"
+         },
+         ...
+       ]
+     }
+
+3. Dashboard User Interface Components:
+   - `components/UrlList.tsx`:
+     * Displays a clean table / card list of all shortened URLs.
+     * Columns:
+       1. Short Link (with 1-click quick copy icon)
+       2. Original Destination URL (truncated with hover preview)
+       3. Date Created
+       4. Total Clicks Badge (prominent counter, e.g. "14 clicks")
+       5. "View Analytics" button/row click trigger.
+     * Empty state banner when no URLs have been created yet.
+
+   - `components/UrlAnalyticsModal.tsx` (Detailed Analytics View):
+     * Opens when user clicks on any URL row or "View Analytics" button.
+     * Header: Short URL, Original Target URL, and Close button.
+     * Metric Summary Cards:
+       - Total Clicks (large bold metric)
+       - First Click Timestamp
+       - Most Recent Click Timestamp
+     * Click Timeline / Distribution:
+       - Mini visual bar chart showing clicks grouped by hour or day.
+     * Detailed Timestamped Click Log:
+       - Scrollable table showing every single click.
+       - Each entry shows:
+         * Exact date & time (e.g. "Nov 22, 2026, 16:15:02 UTC")
+         * Relative time (e.g. "2 minutes ago")
+         * Device / Browser badge (parsed from User-Agent)
+         * Referrer source (direct / external link)
+
+4. Gate Verification for Feature 3:
+   - Shorten 2 different URLs.
+   - Generate 5 visits on URL 1 and 2 visits on URL 2.
+   - Load dashboard: Verify URL 1 displays 5 clicks and URL 2 displays 2 clicks.
+   - Click on URL 1: Verify the analytics modal opens and renders 5 timestamped click records.
+   - Confirm timestamps match the exact ISO timestamps recorded in the database.
+
+================================================================================
+7. STEP 4: VERIFICATION, SECURITY, & TESTING SUITE
+================================================================================
+1. Edge Cases & Security Hardening:
+   - Malformed URLs (e.g., "ftp://", "javascript:alert(1)", random words) must be rejected with 400 Bad Request.
+   - Non-existent short codes must gracefully render a friendly 404 page rather than crashing the server.
+   - SQL Injection prevention: Ensure all SQLite queries use prepared statements with parameter binding (`?`), never string interpolation.
+2. Automated Test Script (`scripts/verify-all.ts`):
+   - Step A: Send POST to shorten "https://news.ycombinator.com".
+   - Step B: Extract short URL and code.
+   - Step C: Make 3 sequential GET requests to short URL, capturing 307 redirects.
+   - Step D: Query `/api/urls/[code]/analytics` and assert:
+     * totalClicks === 3
+     * clicks array has length 3
+     * timestamps are ordered newest to oldest
+3. Build Verification:
+   - Run `npm run build` to ensure zero TypeScript errors, lint errors, or broken imports.
+
+================================================================================
+8. STEP-BY-STEP DEVELOPER EXECUTION CHECKLIST
+================================================================================
+[ ] Phase 0: Initialize Next.js project with Tailwind CSS, TypeScript, and SQLite.
+[ ] Phase 0: Verify database initialization and run test script.
+[ ] Phase 1: Implement `lib/shortener.ts` and `app/api/shorten/route.ts`.
+[ ] Phase 1: Implement basic dynamic redirect `app/[code]/route.ts`.
+[ ] Phase 1: Build URL shortener input form with instant clipboard copy button.
+[ ] Phase 1: Test URL shortening and verify redirect works.
+[ ] Phase 2: Implement `lib/tracker.ts` click recording logic.
+[ ] Phase 2: Hook tracker into `app/[code]/route.ts` to capture timestamps on every visit.
+[ ] Phase 2: Test click tracking with curl requests and inspect SQLite records.
+[ ] Phase 3: Implement analytics queries in `lib/analytics.ts` and API endpoints.
+[ ] Phase 3: Build dashboard URL list showing all shortened links and total clicks.
+[ ] Phase 3: Build detailed analytics modal/view displaying all click timestamps.
+[ ] Phase 3: Verify dashboard and modal display accurate real-time data.
+[ ] Phase 4: Run end-to-end automated verification script and production build.
+================================================================================

@@ -1,0 +1,18 @@
+
+
+
+Project: URL Shortener with Analytics Dashboard
+Build a working web application using ***Next.js*** where users can shorten URLs and track how those URLs are performing.
+---
+## Features to Build
+### 1. URL Shortening
+User should be able to paste a long URL and get a short one back
+The short URL should work — visiting it should take the user to the original URL
+The short URL should be easy to copy
+        ### 2. Click Tracking
+Every time someone visits a short URL, it should be tracked
+Tracked data should include when the click happened
+        ### 3. Analytics Dashboard
+User should be able to see all the URLs they have shortened
+Clicking on a URL should show its detailed analytics
+Analytics should include total clicks with timestamp of each
